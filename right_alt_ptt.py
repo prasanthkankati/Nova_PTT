@@ -2,9 +2,11 @@
 Nova — Zero-UI Push-to-Talk Voice Dictation (English Edition)
 ------------------------------------------------------------
 Hold [Right Alt] -> Speak English -> Release [Right Alt]
-Includes launch confirmation window, subtle audio cues, auto-kill of prior
-instances, 100% dynamic microphone AGC, local English Whisper engine, and
-automatic grammar reframing. Zero clipboard tampering.
+Includes low-level keyboard hook (swallows Right-Alt so apps like Claude Desktop
+never trigger internal shortcuts or menu bars), launch confirmation window,
+subtle audio cues, auto-kill of prior instances, 100% dynamic microphone AGC,
+local English Whisper engine, and automatic grammar reframing.
+Zero clipboard tampering.
 """
 
 import ctypes
@@ -68,6 +70,7 @@ def kill_previous_instances():
 # Win32 Keyboard & Input Injection (Zero Clipboard Modification)
 # ---------------------------------------------------------------------------
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
 
 VK_RMENU = 0xA5       # Right Alt
 VK_MENU = 0x12        # Generic Alt
@@ -81,6 +84,15 @@ KEYEVENTF_UNICODE = 0x0004
 INPUT_KEYBOARD = 1
 
 ULONG_PTR = wintypes.WPARAM
+LRESULT = ctypes.c_ssize_t
+HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
+WM_QUIT = 0x0012
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -118,6 +130,26 @@ class _INPUT_UNION(ctypes.Union):
 
 class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", _INPUT_UNION)]
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", wintypes.WPARAM),
+    ]
+
+
+user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+user32.CallNextHookEx.restype = LRESULT
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostThreadMessageW.restype = wintypes.BOOL
 
 
 def suppress_alt_menu_activation():
@@ -251,14 +283,6 @@ def play_cue(sound_bytes: bytes):
 # Smart English Grammar & Sentence Reframing Engine (Pure English Only)
 # ---------------------------------------------------------------------------
 class SpeechPolisher:
-    """
-    Dedicated English speech reframer:
-    - Strips clutter, hallucinations, and acoustic artifact tokens
-    - Eliminates stutters and repeated words ('I I think think' -> 'I think')
-    - Strips verbal fillers ('um', 'uh', 'you know', 'basically', 'actually')
-    - Fixes subject-verb agreement and broken past tenses
-    - Auto-formats capitalization, contractions, and question punctuation
-    """
     CONTRACTIONS = {
         r"\bdont\b": "don't",
         r"\bcant\b": "can't",
@@ -451,7 +475,7 @@ class ConfirmationWindow(QWidget):
         # Usage Instructions
         info_lbl = QLabel(
             "<b>How to dictate:</b><br>"
-            "1. Click into any text field (Browser, Chat, Notes, Code)<br>"
+            "1. Click into any text field (Claude, Browser, Chat, Word, IDE)<br>"
             "2. <b>Hold [Right Alt]</b> -> Speak English -> <b>Release</b><br>"
             "3. Clean reframed text will type directly at your cursor!"
         )
@@ -460,7 +484,7 @@ class ConfirmationWindow(QWidget):
 
         # Status & Action
         bottom_box = QHBoxLayout()
-        tag = QLabel("100% Mic AGC • Zero Clipboard Edit")
+        tag = QLabel("100% Mic AGC • Zero App Conflict")
         tag.setStyleSheet("font-size: 11px; color: #94a3b8; background: transparent;")
         bottom_box.addWidget(tag)
         bottom_box.addStretch()
@@ -717,7 +741,7 @@ class TranscriberEngine:
 
 
 # ---------------------------------------------------------------------------
-# Background Controller
+# Background Controller with Low-Level Keyboard Hook
 # ---------------------------------------------------------------------------
 class PushToTalkApp:
     def __init__(self, qt_app: QApplication):
@@ -729,9 +753,13 @@ class PushToTalkApp:
         self.audio_chunks = []
         self.sound_enabled = True
 
+        self.hook_handle = None
+        self.hook_thread_id = None
+        self._c_hook = None
+
         self._setup_tray()
         self._start_mic_stream()
-        self._start_key_poller()
+        self._start_low_level_keyboard_hook()
 
         # 1. Subtle, gentle startup cue (low volume)
         play_cue(SOUND_STARTUP)
@@ -740,7 +768,11 @@ class PushToTalkApp:
         self.confirm_win = ConfirmationWindow()
         self.confirm_win.show()
 
-        self.qt_app.aboutToQuit.connect(self.engine.stop)
+        self.qt_app.aboutToQuit.connect(self._cleanup)
+
+    def _cleanup(self):
+        self._stop_low_level_keyboard_hook()
+        self.engine.stop()
 
     def _create_tray_icon(self) -> QIcon:
         pix = QPixmap(64, 64)
@@ -822,7 +854,67 @@ class PushToTalkApp:
             )
             self.stream.start()
 
-    def _start_key_poller(self):
+    # -----------------------------------------------------------------------
+    # Low-Level Keyboard Hook: Intercepts and SWALLOWS Right-Alt
+    # Prevents Claude Desktop or other apps from ever receiving the key!
+    # -----------------------------------------------------------------------
+    def _start_low_level_keyboard_hook(self):
+        is_key_down = [False]
+
+        def hook_worker():
+            self.hook_thread_id = kernel32.GetCurrentThreadId()
+
+            def proc(nCode, wParam, lParam):
+                if nCode >= 0:
+                    kbd = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                    vk = kbd.vkCode
+                    # Intercept Right-Alt (VK_RMENU) or Context Menu key (VK_APPS)
+                    if vk in (VK_RMENU, VK_APPS):
+                        if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                            if not is_key_down[0]:
+                                is_key_down[0] = True
+                                threading.Thread(target=self._start_recording, daemon=True).start()
+                            # Return 1 to completely swallow key from reaching Claude Desktop!
+                            return 1
+                        elif wParam in (WM_KEYUP, WM_SYSKEYUP):
+                            if is_key_down[0]:
+                                is_key_down[0] = False
+                                threading.Thread(target=self._stop_and_transcribe, daemon=True).start()
+                            # Return 1 to completely swallow keyup from reaching Claude Desktop!
+                            return 1
+
+                return user32.CallNextHookEx(self.hook_handle, nCode, wParam, lParam)
+
+            self._c_hook = HOOKPROC(proc)
+            self.hook_handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._c_hook, None, 0)
+            if not self.hook_handle:
+                print("[WARN] Low-level hook failed, falling back to polling", flush=True)
+                self._fallback_poller()
+                return
+
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+            if self.hook_handle:
+                user32.UnhookWindowsHookEx(self.hook_handle)
+                self.hook_handle = None
+
+        threading.Thread(target=hook_worker, daemon=True).start()
+
+    def _stop_low_level_keyboard_hook(self):
+        if self.hook_thread_id:
+            user32.PostThreadMessageW(self.hook_thread_id, WM_QUIT, 0, 0)
+        if self.hook_handle:
+            try:
+                user32.UnhookWindowsHookEx(self.hook_handle)
+            except Exception:
+                pass
+            self.hook_handle = None
+
+    def _fallback_poller(self):
+        """Fallback in case Windows security policy restricts WH_KEYBOARD_LL."""
         def poll():
             was_down = False
             while True:
