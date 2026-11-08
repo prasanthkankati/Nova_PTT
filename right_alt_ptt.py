@@ -1,10 +1,10 @@
 """
-FlowVoice — Zero-UI Push-to-Talk Voice Dictation (English Edition)
-------------------------------------------------------------------
+Nova — Zero-UI Push-to-Talk Voice Dictation (English Edition)
+------------------------------------------------------------
 Hold [Right Alt] -> Speak English -> Release [Right Alt]
 Includes launch confirmation window, subtle audio cues, auto-kill of prior
 instances, 100% dynamic microphone AGC, local English Whisper engine, and
-automatic grammar reframing.
+automatic grammar reframing. Zero clipboard tampering.
 """
 
 import ctypes
@@ -24,7 +24,7 @@ import wave
 import winsound
 
 APP_DIR = Path(__file__).resolve().parent
-LOG_FILE = APP_DIR / "ptt.log"
+LOG_FILE = APP_DIR / "nova.log"
 
 if sys.stdout is None or sys.stderr is None:
     log_handle = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
@@ -33,7 +33,6 @@ if sys.stdout is None or sys.stderr is None:
 
 import numpy as np
 import psutil
-import pyperclip
 import sounddevice as sd
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
@@ -41,10 +40,10 @@ from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenu, QPushBut
 
 
 # ---------------------------------------------------------------------------
-# Auto-Kill Previous Instances
+# Auto-Kill Previous Instances (Self-Healing on launch)
 # ---------------------------------------------------------------------------
 def kill_previous_instances():
-    """Kills any previous running instance of FlowVoice or whisper-server before starting."""
+    """Kills any previous running instance of Nova or whisper-server before starting."""
     curr_pid = os.getpid()
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -57,8 +56,8 @@ def kill_previous_instances():
             # Kill orphaned whisper-server
             if "whisper-server.exe" in name:
                 proc.kill()
-            # Kill previous pythonw / python running right_alt_ptt.py
-            elif "python" in name and any("right_alt_ptt.py" in str(a).lower() for a in cmdline) and not any("-c" in str(a) for a in cmdline):
+            # Kill previous pythonw / python running right_alt_ptt.py or nova
+            elif "python" in name and any(("right_alt_ptt.py" in str(a).lower() or "nova" in str(a).lower()) for a in cmdline) and not any("-c" in str(a) for a in cmdline):
                 proc.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
@@ -66,7 +65,7 @@ def kill_previous_instances():
 
 
 # ---------------------------------------------------------------------------
-# Win32 Keyboard & Input Injection
+# Win32 Keyboard & Input Injection (Zero Clipboard Modification)
 # ---------------------------------------------------------------------------
 user32 = ctypes.windll.user32
 
@@ -147,15 +146,10 @@ def clear_stuck_modifiers():
 def type_text_into_active_field(text: str):
     """
     Types text directly into the focused input field via Win32 SendInput.
-    Also copies a backup to the clipboard without stealing focus.
+    NOTE: NEVER modifies or touches the user's clipboard!
     """
     if not text:
         return
-
-    try:
-        pyperclip.copy(text.strip())
-    except Exception:
-        pass
 
     clear_stuck_modifiers()
     time.sleep(0.02)
@@ -179,10 +173,10 @@ def type_text_into_active_field(text: str):
 
 
 # ---------------------------------------------------------------------------
-# Audio Feedback Synthesis
+# Audio Feedback Synthesis (WhatsApp Sent Tone + Subtle Modern Tactile Cues)
 # ---------------------------------------------------------------------------
 def _generate_wav(notes: list, duration: float = 0.20, decay: float = 14.0, volume: float = 0.82) -> bytes:
-    """Synthesizes high-fidelity, warm harmonic acoustic feedback."""
+    """Synthesizes clean acoustic feedback."""
     sr = 44100
     t = np.linspace(0, duration, int(sr * duration), False)
     signal = np.zeros_like(t)
@@ -209,14 +203,38 @@ def _generate_wav(notes: list, duration: float = 0.20, decay: float = 14.0, volu
     return bio.getvalue()
 
 
+def _generate_whatsapp_sent_sound(duration: float = 0.14, volume: float = 0.75) -> bytes:
+    """
+    Pleasant WhatsApp/iMessage-style sent message tone:
+    Upward sweeping resonant bubble chirp (720Hz -> 1380Hz) with smooth decay.
+    """
+    sr = 44100
+    t = np.linspace(0, duration, int(sr * duration), False)
+    freq = np.linspace(720, 1380, len(t))
+    phase = 2 * np.pi * np.cumsum(freq) / sr
+    env = np.sin(np.pi * np.clip(t / 0.04, 0, 1) * 0.5) * np.exp(-22.0 * t)
+    sig = np.sin(phase) * env + 0.24 * np.sin(2 * phase) * env
+    max_val = np.max(np.abs(sig))
+    if max_val > 0.001:
+        sig = sig / max_val * volume
+    pcm = (sig * 32767.0).astype(np.int16)
+    bio = io.BytesIO()
+    with wave.open(bio, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm.tobytes())
+    return bio.getvalue()
+
+
 # 1. Subtle, soft startup chime (warm, gentle low-volume blip)
 SOUND_STARTUP = _generate_wav([(587.33, 0.0)], duration=0.12, decay=25.0, volume=0.25)
 # 2. Key Down: Very short modern micro-click (25ms subtle tactile tick)
 SOUND_PRESS = _generate_wav([(1200.0, 0.0)], duration=0.025, decay=85.0, volume=0.40)
 # 3. Key Up: Preserved exact descending sound (523Hz -> 440Hz)
 SOUND_RELEASE = _generate_wav([(523.25, 0.0), (440.0, 0.02)], duration=0.10, decay=22.0, volume=0.75)
-# 4. Text Injected: Clean melodic completion chime (1046Hz -> 1318Hz)
-SOUND_SUCCESS = _generate_wav([(1046.5, 0.0), (1318.51, 0.06)], duration=0.24, decay=12.0, volume=0.80)
+# 4. Text Injected: WhatsApp-style pleasant 'sent message' swoosh-pop tone
+SOUND_SUCCESS = _generate_whatsapp_sent_sound(duration=0.14, volume=0.75)
 
 
 def play_cue(sound_bytes: bytes):
@@ -405,14 +423,14 @@ class SpeechPolisher:
 
 
 # ---------------------------------------------------------------------------
-# Launch Confirmation Window
+# Launch Confirmation Window (Nova UI)
 # ---------------------------------------------------------------------------
 class ConfirmationWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(410, 225)
+        self.setFixedSize(410, 230)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 20)
@@ -420,20 +438,20 @@ class ConfirmationWindow(QWidget):
 
         # Header
         title_box = QHBoxLayout()
-        icon_lbl = QLabel("🎙️")
+        icon_lbl = QLabel("✨")
         icon_lbl.setStyleSheet("font-size: 26px; background: transparent;")
         title_box.addWidget(icon_lbl)
 
-        title_lbl = QLabel("FlowVoice is Active & Ready")
-        title_lbl.setStyleSheet("font-size: 17px; font-weight: bold; color: #38bdf8; background: transparent;")
+        title_lbl = QLabel("NOVA is Active & Ready")
+        title_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #38bdf8; background: transparent;")
         title_box.addWidget(title_lbl)
         title_box.addStretch()
         layout.addLayout(title_box)
 
         # Usage Instructions
         info_lbl = QLabel(
-            "<b>How to use:</b><br>"
-            "1. Click into any text field (Notepad, Word, Browser, Chat)<br>"
+            "<b>How to dictate:</b><br>"
+            "1. Click into any text field (Browser, Chat, Notes, Code)<br>"
             "2. <b>Hold [Right Alt]</b> -> Speak English -> <b>Release</b><br>"
             "3. Clean reframed text will type directly at your cursor!"
         )
@@ -442,7 +460,7 @@ class ConfirmationWindow(QWidget):
 
         # Status & Action
         bottom_box = QHBoxLayout()
-        tag = QLabel("100% Mic AGC • English Only")
+        tag = QLabel("100% Mic AGC • Zero Clipboard Edit")
         tag.setStyleSheet("font-size: 11px; color: #94a3b8; background: transparent;")
         bottom_box.addWidget(tag)
         bottom_box.addStretch()
@@ -469,7 +487,7 @@ class ConfirmationWindow(QWidget):
 
         # Center on user display
         screen = QApplication.primaryScreen().geometry()
-        self.move((screen.width() - 410) // 2, (screen.height() - 225) // 2)
+        self.move((screen.width() - 410) // 2, (screen.height() - 230) // 2)
 
         # Auto-dismiss after 5 seconds
         self.timer = QTimer(self)
@@ -481,10 +499,10 @@ class ConfirmationWindow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         grad = QLinearGradient(0, 0, 0, self.height())
-        grad.setColorAt(0, QColor(15, 23, 42, 245))
+        grad.setColorAt(0, QColor(15, 23, 42, 248))
         grad.setColorAt(1, QColor(30, 41, 59, 252))
         p.setBrush(grad)
-        p.setPen(QPen(QColor(56, 189, 248, 180), 1.5))
+        p.setPen(QPen(QColor(56, 189, 248, 190), 1.5))
         p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
         p.end()
 
@@ -508,7 +526,6 @@ def prepare_100_percent_microphone_pcm16(audio_f32: np.ndarray, in_rate: int, ta
     Continuous linear resampling + DC bias removal + 100% full-scale Peak/RMS normalization.
     Guarantees Whisper receives clean, maximum dynamic range speech with zero clutter.
     """
-    # 1. High-fidelity continuous linear interpolation resampling
     if in_rate != target_rate:
         duration = len(audio_f32) / in_rate
         target_len = int(duration * target_rate)
@@ -516,19 +533,17 @@ def prepare_100_percent_microphone_pcm16(audio_f32: np.ndarray, in_rate: int, ta
         x_new = np.linspace(0, duration, target_len, endpoint=False)
         audio_f32 = np.interp(x_new, x_old, audio_f32).astype(np.float32)
 
-    # 2. Remove DC bias (center the signal)
+    # Remove DC bias (center the signal)
     audio_f32 = audio_f32 - float(np.mean(audio_f32))
 
-    # 3. Dynamic Peak & RMS boost to 100% full-scale volume
+    # Dynamic Peak & RMS boost to 100% full-scale volume
     peak = float(np.max(np.abs(audio_f32)))
     if peak > 0.003:
-        # Scale to 98% full-scale dynamic range (-0.2 dBFS)
         gain = 0.98 / peak
-        # Cap gain at 32x to avoid boosting pure silence noise floor
         gain = min(gain, 32.0)
         audio_f32 = audio_f32 * gain
 
-    # 4. Soft clip and convert to 16-bit PCM
+    # Soft clip and convert to 16-bit PCM
     audio_f32 = np.clip(audio_f32, -1.0, 1.0)
     return (audio_f32 * 32767.0).astype(np.int16)
 
@@ -569,12 +584,19 @@ class TranscriberEngine:
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{SERVER_PORT}/", timeout=0.5) as _:
                         self.server_ready = True
-                        print("[OK] Whisper English engine ready on port", SERVER_PORT, flush=True)
+                        print("[OK] Nova English engine ready on port", SERVER_PORT, flush=True)
                         return
                 except Exception:
                     pass
         except Exception as e:
             print("[WARN] Whisper server launch warning:", e, flush=True)
+
+    def restart(self):
+        """Self-healing method to restart the engine if stuck."""
+        self.stop()
+        time.sleep(0.5)
+        self.server_ready = False
+        self._start_whisper_server()
 
     def stop(self):
         if self.server_proc:
@@ -599,7 +621,7 @@ class TranscriberEngine:
         # 1. Primary: In-memory local server
         if self.server_ready:
             try:
-                boundary = "FlowVoiceBoundary"
+                boundary = "NovaBoundary"
                 nl = b"\r\n"
                 parts = [
                     b"--" + boundary.encode() + nl,
@@ -736,10 +758,10 @@ class PushToTalkApp:
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self._create_tray_icon(), self.qt_app)
-        self.tray.setToolTip("FlowVoice (Hold Right Alt to dictate — English)")
+        self.tray.setToolTip("NOVA — Push-to-Talk Voice Dictation (English)")
 
         menu = QMenu()
-        info_action = QAction("FlowVoice Active (Hold Right Alt)", menu)
+        info_action = QAction("NOVA Active (Hold Right Alt)", menu)
         info_action.setEnabled(False)
         menu.addAction(info_action)
         menu.addSeparator()
@@ -750,13 +772,27 @@ class PushToTalkApp:
         sound_toggle.triggered.connect(lambda chk: setattr(self, "sound_enabled", chk))
         menu.addAction(sound_toggle)
 
+        # Self-healing option in tray
+        heal_action = QAction("Restart Engine (Self-Healing)", menu)
+        heal_action.triggered.connect(self._self_heal)
+        menu.addAction(heal_action)
+
         menu.addSeparator()
-        quit_action = QAction("Exit FlowVoice", menu)
+        quit_action = QAction("Exit NOVA", menu)
         quit_action.triggered.connect(self.qt_app.quit)
         menu.addAction(quit_action)
 
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def _self_heal(self):
+        """Self-healing routine accessible via tray."""
+        clear_stuck_modifiers()
+        self.audio_chunks.clear()
+        self.is_recording = False
+        threading.Thread(target=self.engine.restart, daemon=True).start()
+        play_cue(SOUND_STARTUP)
+        self.tray.showMessage("NOVA Self-Healing", "Engine restarted and audio buffers cleared.", QSystemTrayIcon.MessageIcon.Information, 2000)
 
     def _start_mic_stream(self):
         def audio_callback(indata, _frames, _time_info, _status):
@@ -844,7 +880,7 @@ def main():
     # 1. Terminate any older version running in background before starting fresh
     kill_previous_instances()
 
-    # 2. Run FlowVoice
+    # 2. Run Nova
     qt_app = QApplication(sys.argv)
     qt_app.setQuitOnLastWindowClosed(False)
     _controller = PushToTalkApp(qt_app)
