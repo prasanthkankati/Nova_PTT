@@ -1,0 +1,6 @@
+numpy
+psutil
+pyperclip
+PySide6
+sounddevice
+SpeechRecognition

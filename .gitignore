@@ -1,0 +1,14 @@
+# Whisper binaries and models (downloaded via setup_whisper.py)
+whisper_bin/
+
+# Python cache & build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs & temp files
+*.log
+ptt.log
+*.wav
+*.tmp
