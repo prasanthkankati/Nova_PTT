@@ -1,4 +1,5 @@
 # NOVA ✨
+<img width="1200" height="896" alt="Nova" src="https://github.com/user-attachments/assets/4d3aaa2b-a925-4830-a517-e8a39dea0d6a" />
 
 > **Zero-UI Push-to-Talk Voice Dictation Assistant with Real-Time Sentence Reframing & 100% Dynamic AGC**
 
