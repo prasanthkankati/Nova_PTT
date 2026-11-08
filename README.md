@@ -1,5 +1,6 @@
 # NOVA PUSH TO TALK
-<img width="1200" height="896" alt="Nova" src="https://github.com/user-attachments/assets/4d3aaa2b-a925-4830-a517-e8a39dea0d6a" />
+<img width="2752" height="1536" alt="NOVA_PTT" src="https://github.com/user-attachments/assets/0e8d882b-0987-4652-a76c-3cec6b5df77a" />
+
 
 > **Zero-UI Push-to-Talk Voice Dictation Assistant with Real-Time Sentence Reframing & 100% Dynamic AGC**
 
