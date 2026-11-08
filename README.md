@@ -13,7 +13,7 @@ Hold **Right Alt** (or **Right Option** on Mac) to speak into any text box acros
 ---
 
 ## 🌟 Why NOVA?
-- **Universal Push-to-Talk:** Works across Chrome, Word, Notion, VS Code, Discord, Slack, WhatsApp, ChatGPT, and Windows/macOS native apps.
+- **Universal Push-to-Talk:** Works across Chrome, Word, Notion, VS Code, Discord, All TUI and web AI apps like Claude, GPT, AGY, Slack, WhatsApp, ChatGPT, and Windows/macOS native apps.
 - **100% Dynamic Microphone Gain (AGC):** Automatically boosts soft speech up to 98% full dynamic scale (-0.2 dBFS) so you never need to shout.
 - **Artifact & Clutter Suppression:** Eliminates Whisper bracket hallucinations (`[BLANK_AUDIO]`, `(music)`, `(applause)`) and acoustic stutter artifacts.
 - **Real-Time Sentence Reframing:**
