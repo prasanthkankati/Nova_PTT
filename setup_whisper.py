@@ -63,17 +63,17 @@ def main():
     if not MODEL_PATH.exists():
         download_file(MODEL_URL, MODEL_PATH, "Quantized Whisper Model (ggml-base.en-q5_1)")
 
-    # Copy project to a clean user folder & create Desktop launcher
+    # Copy project to user directory only if running from another location
     user_dir = Path.home() / "RightAlt-PTT"
-    user_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(APP_DIR / "right_alt_ptt.py", user_dir / "right_alt_ptt.py")
-    shutil.copy2(APP_DIR / "setup_whisper.py", user_dir / "setup_whisper.py")
-
-    user_bin = user_dir / "whisper_bin"
-    user_bin.mkdir(parents=True, exist_ok=True)
-    for item in BIN_DIR.iterdir():
-        if item.is_file():
-            shutil.copy2(item, user_bin / item.name)
+    if APP_DIR.resolve() != user_dir.resolve():
+        user_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(APP_DIR / "right_alt_ptt.py", user_dir / "right_alt_ptt.py")
+        shutil.copy2(APP_DIR / "setup_whisper.py", user_dir / "setup_whisper.py")
+        user_bin = user_dir / "whisper_bin"
+        user_bin.mkdir(parents=True, exist_ok=True)
+        for item in BIN_DIR.iterdir():
+            if item.is_file():
+                shutil.copy2(item, user_bin / item.name)
 
     # Create silent background launcher (.vbs) and batch launcher (.bat) on Desktop
     desktop = Path.home() / "Desktop"
